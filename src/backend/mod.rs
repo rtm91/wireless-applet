@@ -3,6 +3,8 @@
 
 pub mod sysfs;
 
+use std::time::Duration;
+
 use cosmic::iced::Subscription;
 use cosmic::iced::futures::SinkExt;
 use cosmic::iced::futures::channel::mpsc::Sender;
@@ -99,12 +101,21 @@ pub enum BackendEvent {
     Snapshot(Vec<WirelessDevice>),
 }
 
-/// Emits a snapshot on start and again whenever the kernel reports a change
-/// to any power supply.
+/// How often the power supplies are re-read.
+///
+/// Polling is the only way to observe this hardware. The `kysona` driver
+/// exposes `capacity` and `status` as attributes computed on read: it never
+/// calls `power_supply_changed()`, so the kernel emits no uevent, and because
+/// nothing is written to sysfs there is no inotify notification either. A
+/// scan is a handful of small file reads, so a short interval is cheap.
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Emits a snapshot on start and again whenever the devices change.
 pub fn subscription() -> Subscription<BackendEvent> {
     Subscription::run_with("wireless-backend", |_| {
         stream::channel(16, |mut output: Sender<BackendEvent>| async move {
-            let _ = output.send(BackendEvent::Snapshot(sysfs::scan())).await;
+            let mut last = sysfs::scan();
+            let _ = output.send(BackendEvent::Snapshot(last.clone())).await;
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
@@ -150,9 +161,9 @@ pub fn subscription() -> Subscription<BackendEvent> {
                 }
             });
 
-            // Not every power supply driver emits change events, so a slow
-            // poll backs up the monitor.
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            // The monitor still earns its keep for genuine hotplug, such as the
+            // receiver being plugged in or pulled out.
+            let mut interval = tokio::time::interval(POLL_INTERVAL);
             interval.tick().await;
 
             loop {
@@ -160,12 +171,16 @@ pub fn subscription() -> Subscription<BackendEvent> {
                     Some(()) = rx.recv() => {
                         tracing::debug!("power supply changed, rescanning");
                     }
-                    _ = interval.tick() => {
-                        tracing::debug!("periodic rescan");
-                    }
+                    _ = interval.tick() => {}
                 }
 
-                let _ = output.send(BackendEvent::Snapshot(sysfs::scan())).await;
+                let devices = sysfs::scan();
+                if devices == last {
+                    continue;
+                }
+
+                last = devices.clone();
+                let _ = output.send(BackendEvent::Snapshot(devices)).await;
             }
         })
     })

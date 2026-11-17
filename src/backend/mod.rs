@@ -115,7 +115,19 @@ impl ChargeState {
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
-    Snapshot(Vec<WirelessDevice>),
+    Snapshot {
+        devices: Vec<WirelessDevice>,
+        /// Local time the scan finished, formatted for display.
+        scanned_at: String,
+    },
+}
+
+/// Reads the current state and stamps it with the time it was taken.
+fn snapshot() -> BackendEvent {
+    BackendEvent::Snapshot {
+        devices: sysfs::scan(),
+        scanned_at: jiff::Zoned::now().strftime("%H:%M:%S").to_string(),
+    }
 }
 
 /// How often the power supplies are re-read.
@@ -131,8 +143,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 pub fn subscription() -> Subscription<BackendEvent> {
     Subscription::run_with("wireless-backend", |_| {
         stream::channel(16, |mut output: Sender<BackendEvent>| async move {
-            let mut last = sysfs::scan();
-            let _ = output.send(BackendEvent::Snapshot(last.clone())).await;
+            let _ = output.send(snapshot()).await;
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
@@ -191,14 +202,22 @@ pub fn subscription() -> Subscription<BackendEvent> {
                     _ = interval.tick() => {}
                 }
 
-                let devices = sysfs::scan();
-                if devices == last {
-                    continue;
-                }
-
-                last = devices.clone();
-                let _ = output.send(BackendEvent::Snapshot(devices)).await;
+                let _ = output.send(snapshot()).await;
             }
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_stamps_the_scan_time() {
+        let BackendEvent::Snapshot { scanned_at, .. } = snapshot();
+
+        assert_eq!(scanned_at.len(), 8, "expected HH:MM:SS, got {scanned_at}");
+        assert_eq!(scanned_at.as_bytes()[2], b':');
+        assert_eq!(scanned_at.as_bytes()[5], b':');
+    }
 }

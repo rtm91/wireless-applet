@@ -22,7 +22,13 @@ fn scan_in(root: &Path) -> Vec<WirelessDevice> {
         .filter_map(|entry| read_device(&entry.path()))
         .collect();
 
-    devices.sort_by(|a, b| a.name.cmp(&b.name));
+    // Reachable devices first, so a peripheral that is switched off does not
+    // push the live ones down the list.
+    devices.sort_by(|a, b| {
+        b.connected
+            .cmp(&a.connected)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     devices
 }
 

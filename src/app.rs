@@ -5,16 +5,18 @@ use std::sync::LazyLock;
 
 use cosmic::app::{Core, Task};
 use cosmic::applet::cosmic_panel_config::PanelAnchor;
-use cosmic::applet::menu_control_padding;
+use cosmic::applet::{menu_control_padding, padded_control};
 use cosmic::iced::core::window;
 use cosmic::iced::window::Id;
 use cosmic::iced::{Alignment, Length, Rectangle, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::theme;
-use cosmic::widget::{Id as WidgetId, autosize, button, column, icon, list_column, row, text};
+use cosmic::widget::{
+    Id as WidgetId, autosize, button, column, divider, icon, list_column, row, text,
+};
 use cosmic::Element;
 
-use crate::backend::{self, BackendEvent, WirelessDevice};
+use crate::backend::{self, BackendEvent, ChargeState, WirelessDevice};
 use crate::config::APP_ID;
 
 static AUTOSIZE_ID: LazyLock<WidgetId> =
@@ -28,6 +30,8 @@ pub struct Applet {
     core: Core,
     popup: Option<Id>,
     devices: Vec<WirelessDevice>,
+    /// Local time of the last scan, shown in the popup.
+    last_updated: Option<String>,
 }
 
 impl Default for Applet {
@@ -36,6 +40,7 @@ impl Default for Applet {
             core: Core::default(),
             popup: None,
             devices: Vec::new(),
+            last_updated: None,
         }
     }
 }
@@ -99,8 +104,12 @@ impl cosmic::Application for Applet {
                     self.popup = None;
                 }
             }
-            Message::Backend(BackendEvent::Snapshot(devices)) => {
+            Message::Backend(BackendEvent::Snapshot {
+                devices,
+                scanned_at,
+            }) => {
                 self.devices = devices;
+                self.last_updated = Some(scanned_at);
             }
         }
 
@@ -168,12 +177,9 @@ impl cosmic::Application for Applet {
                             settings
                         },
                         Some(Box::new(|state: &Self| {
-                            Element::from(
-                                state
-                                    .core
-                                    .applet
-                                    .popup_container::<Message>(device_list(&state.devices)),
-                            )
+                            Element::from(state.core.applet.popup_container::<Message>(
+                                device_list(&state.devices, state.last_updated.as_deref()),
+                            ))
                             .map(cosmic::Action::App)
                         })),
                     ))
@@ -185,7 +191,7 @@ impl cosmic::Application for Applet {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Message> {
-        device_list(&self.devices)
+        device_list(&self.devices, self.last_updated.as_deref())
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
@@ -193,7 +199,10 @@ impl cosmic::Application for Applet {
     }
 }
 
-fn device_list(devices: &[WirelessDevice]) -> Element<'_, Message> {
+fn device_list<'a>(
+    devices: &'a [WirelessDevice],
+    last_updated: Option<&str>,
+) -> Element<'a, Message> {
     let mut list = list_column();
 
     if devices.is_empty() {
@@ -207,8 +216,24 @@ fn device_list(devices: &[WirelessDevice]) -> Element<'_, Message> {
         }
     }
 
-    list.into()
+    let Some(updated) = last_updated else {
+        return list.into();
+    };
+
+    let spacing = theme::active().cosmic().spacing;
+
+    column::with_children(vec![
+        list.into(),
+        padded_control(divider::horizontal::default())
+            .padding([spacing.space_xxs, spacing.space_s])
+            .into(),
+        padded_control(text::caption(format!("Updated {updated}"))).into(),
+    ])
+    .into()
 }
+
+/// Charge at or below which the percentage is called out.
+const LOW_THRESHOLD: u8 = 20;
 
 /// Dims text for devices that are out of range.
 fn dimmed(theme: &cosmic::Theme) -> cosmic::iced::advanced::widget::text::Style {
@@ -220,7 +245,25 @@ fn dimmed(theme: &cosmic::Theme) -> cosmic::iced::advanced::widget::text::Style 
     }
 }
 
+/// Highlights a battery that is charging.
+fn charging(theme: &cosmic::Theme) -> cosmic::iced::advanced::widget::text::Style {
+    cosmic::iced::advanced::widget::text::Style {
+        color: Some(theme.cosmic().accent_text_color().into()),
+        ..Default::default()
+    }
+}
+
+/// Warns about a battery that is running low.
+fn low(theme: &cosmic::Theme) -> cosmic::iced::advanced::widget::text::Style {
+    cosmic::iced::advanced::widget::text::Style {
+        color: Some(theme.cosmic().warning_text_color().into()),
+        ..Default::default()
+    }
+}
+
 const DIMMED: theme::Text = theme::Text::Custom(dimmed);
+const CHARGING: theme::Text = theme::Text::Custom(charging);
+const LOW: theme::Text = theme::Text::Custom(low);
 
 fn device_row(device: &WirelessDevice) -> Element<'_, Message> {
     let mut details: Vec<Element<'_, Message>> = Vec::with_capacity(2);
@@ -239,10 +282,14 @@ fn device_row(device: &WirelessDevice) -> Element<'_, Message> {
     };
 
     let capacity = text::body(capacity);
-    let capacity: Element<'_, Message> = if device.connected {
-        capacity.into()
-    } else {
+    let capacity: Element<'_, Message> = if !device.connected {
         capacity.class(DIMMED).into()
+    } else if device.state == ChargeState::Charging {
+        capacity.class(CHARGING).into()
+    } else if device.capacity.is_some_and(|value| value <= LOW_THRESHOLD) {
+        capacity.class(LOW).into()
+    } else {
+        capacity.into()
     };
 
     row::with_children(vec![

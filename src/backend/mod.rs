@@ -7,6 +7,8 @@ use cosmic::iced::Subscription;
 use cosmic::iced::futures::SinkExt;
 use cosmic::iced::futures::channel::mpsc::Sender;
 use cosmic::iced::stream;
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::io::Errno;
 
 /// A wireless device that reports a battery.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,25 +111,60 @@ pub fn subscription() -> Subscription<BackendEvent> {
             // The monitor is built inside the thread because udev::MonitorSocket
             // is not Send. Only the channel sender crosses the boundary.
             std::thread::spawn(move || {
-                let socket = udev::MonitorBuilder::new()
+                let socket = match udev::MonitorBuilder::new()
                     .and_then(|builder| builder.match_subsystem("power_supply"))
-                    .and_then(|builder| builder.listen());
+                    .and_then(|builder| builder.listen())
+                {
+                    Ok(socket) => socket,
+                    Err(err) => {
+                        tracing::warn!(?err, "failed to start udev monitor");
+                        return;
+                    }
+                };
 
-                match socket {
-                    Ok(socket) => {
-                        tracing::debug!("udev monitor listening on power_supply");
-                        for _event in socket.iter() {
-                            if tx.send(()).is_err() {
-                                break;
-                            }
+                tracing::debug!("udev monitor listening on power_supply");
+
+                loop {
+                    let mut fds = [PollFd::new(&socket, PollFlags::IN)];
+
+                    match poll(&mut fds, -1) {
+                        Ok(0) => continue,
+                        Ok(_) => {}
+                        Err(Errno::INTR) => continue,
+                        Err(err) => {
+                            tracing::warn!(?err, "udev poll failed");
+                            break;
                         }
                     }
-                    Err(err) => tracing::warn!(?err, "failed to start udev monitor"),
+
+                    // The monitor socket is non-blocking, so every queued event
+                    // has to be drained before waiting again.
+                    let mut received = false;
+                    for _event in socket.iter() {
+                        received = true;
+                    }
+
+                    if received && tx.send(()).is_err() {
+                        break;
+                    }
                 }
             });
 
-            while rx.recv().await.is_some() {
-                tracing::debug!("power supply changed, rescanning");
+            // Not every power supply driver emits change events, so a slow
+            // poll backs up the monitor.
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    Some(()) = rx.recv() => {
+                        tracing::debug!("power supply changed, rescanning");
+                    }
+                    _ = interval.tick() => {
+                        tracing::debug!("periodic rescan");
+                    }
+                }
+
                 let _ = output.send(BackendEvent::Snapshot(sysfs::scan())).await;
             }
         })

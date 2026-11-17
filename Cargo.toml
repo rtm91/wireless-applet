@@ -16,7 +16,8 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dd108aa99d7306
     "wayland",
     "winit",
 ] }
-tokio = { version = "1", features = ["sync"] }
+rustix = { version = "0.38", features = ["event"] }
+tokio = { version = "1", features = ["macros", "sync", "time"] }
 tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

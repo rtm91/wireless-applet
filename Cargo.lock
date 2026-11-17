@@ -916,6 +916,7 @@ name = "cosmic-applet-wireless"
 version = "0.1.0"
 dependencies = [
  "libcosmic",
+ "rustix 0.38.44",
  "tokio",
  "tracing",
  "tracing-log",

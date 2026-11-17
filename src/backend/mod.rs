@@ -115,19 +115,7 @@ impl ChargeState {
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
-    Snapshot {
-        devices: Vec<WirelessDevice>,
-        /// Local time the scan finished, formatted for display.
-        scanned_at: String,
-    },
-}
-
-/// Reads the current state and stamps it with the time it was taken.
-fn snapshot() -> BackendEvent {
-    BackendEvent::Snapshot {
-        devices: sysfs::scan(),
-        scanned_at: jiff::Zoned::now().strftime("%H:%M:%S").to_string(),
-    }
+    Snapshot(Vec<WirelessDevice>),
 }
 
 /// How often the power supplies are re-read.
@@ -137,13 +125,14 @@ fn snapshot() -> BackendEvent {
 /// calls `power_supply_changed()`, so the kernel emits no uevent, and because
 /// nothing is written to sysfs there is no inotify notification either. A
 /// scan is a handful of small file reads, so a short interval is cheap.
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Emits a snapshot on start and again whenever the devices change.
 pub fn subscription() -> Subscription<BackendEvent> {
     Subscription::run_with("wireless-backend", |_| {
         stream::channel(16, |mut output: Sender<BackendEvent>| async move {
-            let _ = output.send(snapshot()).await;
+            let mut last = sysfs::scan();
+            let _ = output.send(BackendEvent::Snapshot(last.clone())).await;
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
@@ -202,22 +191,14 @@ pub fn subscription() -> Subscription<BackendEvent> {
                     _ = interval.tick() => {}
                 }
 
-                let _ = output.send(snapshot()).await;
+                let devices = sysfs::scan();
+                if devices == last {
+                    continue;
+                }
+
+                last = devices.clone();
+                let _ = output.send(BackendEvent::Snapshot(devices)).await;
             }
         })
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn snapshot_stamps_the_scan_time() {
-        let BackendEvent::Snapshot { scanned_at, .. } = snapshot();
-
-        assert_eq!(scanned_at.len(), 8, "expected HH:MM:SS, got {scanned_at}");
-        assert_eq!(scanned_at.as_bytes()[2], b':');
-        assert_eq!(scanned_at.as_bytes()[5], b':');
-    }
 }

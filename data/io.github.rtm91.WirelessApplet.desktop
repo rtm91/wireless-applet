@@ -1,0 +1,15 @@
+[Desktop Entry]
+Name=Wireless
+Comment=Wireless device battery and charging status
+Type=Application
+Exec=cosmic-applet-wireless
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Applet;Wireless;Battery;Charging;
+Icon=io.github.rtm91.WirelessApplet-symbolic
+StartupNotify=true
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicShrinkable=true
+X-CosmicHoverPopup=Auto
+X-OverflowPriority=10

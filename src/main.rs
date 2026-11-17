@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright 2026 Artem Wittermann
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn main() -> cosmic::iced::Result {
+    tracing_subscriber::fmt::init();
+    let _ = tracing_log::LogTracer::init();
+
+    tracing::info!("Starting wireless applet with version {VERSION}");
+
+    cosmic_applet_wireless::run()
+}

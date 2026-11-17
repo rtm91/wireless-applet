@@ -1,0 +1,26 @@
+[package]
+name = "cosmic-applet-wireless"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "COSMIC panel applet showing wireless peripheral battery and charging status"
+repository = "https://github.com/rtm91/wireless-applet"
+
+[dependencies]
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dd108aa99d7306110eef06da43eafc109e1ab151", default-features = false, features = [
+    "applet",
+    "applet-token",
+    "dbus-config",
+    "multi-window",
+    "tokio",
+    "wayland",
+    "winit",
+] }
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+lto = "thin"

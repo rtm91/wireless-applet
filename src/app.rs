@@ -4,7 +4,6 @@
 use std::sync::LazyLock;
 
 use cosmic::app::{Core, Task};
-use cosmic::applet::cosmic_panel_config::PanelAnchor;
 use cosmic::applet::padded_control;
 use cosmic::iced::core::window;
 use cosmic::iced::window::Id;
@@ -112,34 +111,56 @@ impl cosmic::Application for Applet {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let horizontal = matches!(
-            self.core.applet.anchor,
-            PanelAnchor::Top | PanelAnchor::Bottom
-        );
+        let horizontal = self.core.applet.is_horizontal();
+        let suggested_size = self.core.applet.suggested_size(true);
+        let applet_padding = self.core.applet.suggested_padding(true);
 
         let mut children: Vec<Element<'_, Message>> = Vec::with_capacity(2);
         children.push(
             icon::from_name("network-wireless-symbolic")
-                .size(16)
+                .size(suggested_size.0)
                 .icon()
                 .into(),
         );
 
         if let Some(capacity) = self.lowest_capacity() {
-            children.push(text::body(format!("{capacity}%")).into());
+            let label = self.core.applet.text(format!("{capacity}%"));
+            let label = if horizontal {
+                label
+            } else {
+                label.width(Length::Fixed(f32::from(suggested_size.0)))
+            };
+
+            children.push(
+                label
+                    .height(Length::Fixed(f32::from(suggested_size.1)))
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center)
+                    .into(),
+            );
         }
 
-        let content = row::with_children(children)
-            .spacing(4)
-            .align_y(Alignment::Center);
+        let content: Element<'_, Message> = if horizontal {
+            row::with_children(children)
+                .spacing(applet_padding.1)
+                .align_y(Alignment::Center)
+                .into()
+        } else {
+            column::with_children(children)
+                .spacing(applet_padding.1)
+                .align_x(Alignment::Center)
+                .into()
+        };
+
+        let (horizontal_padding, vertical_padding) = if horizontal {
+            (applet_padding.0, applet_padding.1)
+        } else {
+            (applet_padding.1, applet_padding.0)
+        };
 
         let popup = self.popup;
         let button = button::custom(content)
-            .padding(if horizontal {
-                [0, self.core.applet.suggested_padding(true).0]
-            } else {
-                [self.core.applet.suggested_padding(true).0, 0]
-            })
+            .padding([vertical_padding, horizontal_padding])
             .on_press_with_rectangle(move |offset, bounds| {
                 if let Some(id) = popup {
                     Message::Surface(destroy_popup(id))

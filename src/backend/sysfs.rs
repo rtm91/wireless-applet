@@ -36,6 +36,14 @@ fn read_device(dir: &Path) -> Option<WirelessDevice> {
     let scope = read_attr(dir, "scope").unwrap_or_default();
     let wireless = read_attr(dir, "wireless").as_deref() == Some("1");
 
+    // Device-scoped supplies reuse `online` to report whether the wireless
+    // link is up rather than whether external power is present. System-scoped
+    // supplies keep the usual meaning, so only trust it for peripherals.
+    let connected = match read_attr(dir, "online") {
+        Some(value) if scope.eq_ignore_ascii_case("device") => value == "1",
+        _ => true,
+    };
+
     if !is_wireless(wireless, &scope, kind, &model) {
         return None;
     }
@@ -53,7 +61,7 @@ fn read_device(dir: &Path) -> Option<WirelessDevice> {
             .and_then(|value| value.parse::<u8>().ok())
             .map(|value| value.min(100)),
         state: ChargeState::from_sysfs(&read_attr(dir, "status").unwrap_or_default()),
-        online: read_attr(dir, "online").as_deref() == Some("1"),
+        connected,
         wireless,
     })
 }
@@ -222,8 +230,80 @@ mod tests {
         assert_eq!(device.name, "Compx VXE NordicMouse 1K Dongle");
         assert_eq!(device.capacity, Some(60));
         assert_eq!(device.state, ChargeState::Unknown);
-        assert!(!device.online);
+        assert!(!device.connected);
         assert!(!device.wireless);
+    }
+
+    #[test]
+    fn online_marks_a_device_connected() {
+        let fixture = Fixture::new(
+            "connected",
+            &[
+                ("type", "Battery"),
+                ("status", "Discharging"),
+                ("capacity", "80"),
+                ("online", "1"),
+                ("present", "1"),
+                ("scope", "Device"),
+                ("model_name", "Compx VXE NordicMouse 1K Dongle"),
+            ],
+        );
+
+        let device = read_device(&fixture.0).expect("device should be recognised");
+
+        assert!(device.connected);
+        assert_eq!(device.status_label(), "Discharging");
+    }
+
+    #[test]
+    fn missing_online_attribute_is_connected() {
+        let fixture = Fixture::new(
+            "no-online",
+            &[
+                ("type", "Mouse"),
+                ("scope", "Device"),
+                ("capacity", "55"),
+            ],
+        );
+
+        assert!(read_device(&fixture.0).unwrap().connected);
+    }
+
+    #[test]
+    fn system_scope_online_is_not_a_link_state() {
+        let fixture = Fixture::new(
+            "system-online",
+            &[
+                ("type", "Battery"),
+                ("scope", "System"),
+                ("online", "0"),
+                ("capacity", "80"),
+                ("model_name", "Wireless Keyboard"),
+            ],
+        );
+
+        assert!(read_device(&fixture.0).unwrap().connected);
+    }
+
+    #[test]
+    fn disconnected_device_reports_its_link_state() {
+        let fixture = Fixture::new(
+            "disconnected",
+            &[
+                ("type", "Battery"),
+                ("status", "Unknown"),
+                ("capacity", "90"),
+                ("online", "0"),
+                ("present", "1"),
+                ("scope", "Device"),
+                ("model_name", "Compx VXE NordicMouse 1K Dongle"),
+            ],
+        );
+
+        let device = read_device(&fixture.0).unwrap();
+
+        assert!(!device.connected);
+        assert_eq!(device.status_label(), "Disconnected");
     }
 
     #[test]

@@ -23,15 +23,29 @@ pub struct WirelessDevice {
     /// Charge percentage, when the device reports one.
     pub capacity: Option<u8>,
     pub state: ChargeState,
-    /// External power is present.
+    /// The wireless link is up.
     ///
-    /// Unreliable for device-scoped supplies: some dongles report `online=1`
-    /// while simultaneously reporting `status=Discharging`. Prefer [`state`].
-    ///
-    /// [`state`]: WirelessDevice::state
-    pub online: bool,
+    /// For device-scoped supplies the kernel reuses `online` to report whether
+    /// the peripheral is reachable, not whether external power is present. A
+    /// mouse that is switched off or out of range reports `online=0` while
+    /// leaving its last known capacity in place.
+    pub connected: bool,
     /// The device reports charging wirelessly.
     pub wireless: bool,
+}
+
+impl WirelessDevice {
+    /// Label describing the device's current state.
+    ///
+    /// A device that is out of range keeps reporting its last known capacity,
+    /// so the link state takes precedence over the charge state.
+    pub fn status_label(&self) -> &'static str {
+        if self.connected {
+            self.state.label()
+        } else {
+            "Disconnected"
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

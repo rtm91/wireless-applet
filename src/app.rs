@@ -48,8 +48,16 @@ pub enum Message {
 }
 
 impl Applet {
+    /// Lowest charge among devices that are currently reachable.
+    ///
+    /// A device that is out of range keeps reporting its last known capacity,
+    /// which would otherwise pin the panel to a stale number.
     fn lowest_capacity(&self) -> Option<u8> {
-        self.devices.iter().filter_map(|device| device.capacity).min()
+        self.devices
+            .iter()
+            .filter(|device| device.connected)
+            .filter_map(|device| device.capacity)
+            .min()
     }
 }
 
@@ -202,15 +210,40 @@ fn device_list(devices: &[WirelessDevice]) -> Element<'_, Message> {
     list.into()
 }
 
+/// Dims text for devices that are out of range.
+fn dimmed(theme: &cosmic::Theme) -> cosmic::iced::advanced::widget::text::Style {
+    let mut color = theme.cosmic().background(theme.transparent).component.on;
+    color.alpha *= 0.5;
+    cosmic::iced::advanced::widget::text::Style {
+        color: Some(color.into()),
+        ..Default::default()
+    }
+}
+
+const DIMMED: theme::Text = theme::Text::Custom(dimmed);
+
 fn device_row(device: &WirelessDevice) -> Element<'_, Message> {
     let mut details: Vec<Element<'_, Message>> = Vec::with_capacity(2);
-    details.push(text::body(device.name.clone()).into());
-    details.push(text::caption(device.state.label()).into());
 
-    let capacity = device
-        .capacity
-        .map(|value| format!("{value}%"))
-        .unwrap_or_else(|| "--".to_owned());
+    let name = text::body(device.name.clone());
+    details.push(if device.connected {
+        name.into()
+    } else {
+        name.class(DIMMED).into()
+    });
+    details.push(text::caption(device.status_label()).into());
+
+    let capacity = match device.capacity {
+        Some(value) if device.connected => format!("{value}%"),
+        _ => "--".to_owned(),
+    };
+
+    let capacity = text::body(capacity);
+    let capacity: Element<'_, Message> = if device.connected {
+        capacity.into()
+    } else {
+        capacity.class(DIMMED).into()
+    };
 
     row::with_children(vec![
         icon::from_name(device.kind.icon_name())
@@ -218,7 +251,7 @@ fn device_row(device: &WirelessDevice) -> Element<'_, Message> {
             .icon()
             .into(),
         column::with_children(details).width(Length::Fill).into(),
-        text::body(capacity).into(),
+        capacity,
     ])
     .align_y(Alignment::Center)
     .spacing(12)

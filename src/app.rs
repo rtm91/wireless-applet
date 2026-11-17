@@ -1,30 +1,56 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright 2026 Artem Wittermann
 
+use std::sync::LazyLock;
+
 use cosmic::app::{Core, Task};
-use cosmic::iced::Rectangle;
+use cosmic::applet::cosmic_panel_config::PanelAnchor;
+use cosmic::applet::menu_control_padding;
 use cosmic::iced::core::window;
 use cosmic::iced::window::Id;
+use cosmic::iced::{Alignment, Length, Rectangle, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
-use cosmic::widget;
+use cosmic::theme;
+use cosmic::widget::{Id as WidgetId, autosize, button, column, icon, list_column, row, text};
 use cosmic::Element;
 
+use crate::backend::{self, BackendEvent, WirelessDevice};
 use crate::config::APP_ID;
+
+static AUTOSIZE_ID: LazyLock<WidgetId> =
+    LazyLock::new(|| WidgetId::new("wireless-applet-autosize"));
 
 pub fn run() -> cosmic::iced::Result {
     cosmic::applet::run::<Applet>(())
 }
 
-#[derive(Default)]
 pub struct Applet {
     core: Core,
     popup: Option<Id>,
+    devices: Vec<WirelessDevice>,
+}
+
+impl Default for Applet {
+    fn default() -> Self {
+        Self {
+            core: Core::default(),
+            popup: None,
+            devices: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
     Surface(cosmic::surface::Action<Message>),
     PopupClosed(Id),
+    Backend(BackendEvent),
+}
+
+impl Applet {
+    fn lowest_capacity(&self) -> Option<u8> {
+        self.devices.iter().filter_map(|device| device.capacity).min()
+    }
 }
 
 impl cosmic::Application for Applet {
@@ -45,7 +71,7 @@ impl cosmic::Application for Applet {
         (
             Self {
                 core,
-                popup: None,
+                ..Default::default()
             },
             Task::none(),
         )
@@ -65,18 +91,47 @@ impl cosmic::Application for Applet {
                     self.popup = None;
                 }
             }
+            Message::Backend(BackendEvent::Snapshot(devices)) => {
+                self.devices = devices;
+            }
         }
 
         Task::none()
     }
 
-    fn view(&self) -> Element<'_, Message> {
-        let popup = self.popup;
+    fn subscription(&self) -> Subscription<Message> {
+        backend::subscription().map(Message::Backend)
+    }
 
-        let button = self
-            .core
-            .applet
-            .icon_button("network-wireless-symbolic")
+    fn view(&self) -> Element<'_, Message> {
+        let horizontal = matches!(
+            self.core.applet.anchor,
+            PanelAnchor::Top | PanelAnchor::Bottom
+        );
+
+        let mut children: Vec<Element<'_, Message>> = Vec::with_capacity(2);
+        children.push(
+            icon::from_name("network-wireless-symbolic")
+                .size(16)
+                .icon()
+                .into(),
+        );
+
+        if let Some(capacity) = self.lowest_capacity() {
+            children.push(text::body(format!("{capacity}%")).into());
+        }
+
+        let content = row::with_children(children)
+            .spacing(4)
+            .align_y(Alignment::Center);
+
+        let popup = self.popup;
+        let button = button::custom(content)
+            .padding(if horizontal {
+                [0, self.core.applet.suggested_padding(true).0]
+            } else {
+                [self.core.applet.suggested_padding(true).0, 0]
+            })
             .on_press_with_rectangle(move |offset, bounds| {
                 if let Some(id) = popup {
                     Message::Surface(destroy_popup(id))
@@ -105,31 +160,68 @@ impl cosmic::Application for Applet {
                             settings
                         },
                         Some(Box::new(|state: &Self| {
-                            let content = widget::container(widget::text::body(
-                                "No wireless devices found",
-                            ));
-
-                            Element::from(state.core.applet.popup_container::<Message>(content))
-                                .map(cosmic::Action::App)
+                            Element::from(
+                                state
+                                    .core
+                                    .applet
+                                    .popup_container::<Message>(device_list(&state.devices)),
+                            )
+                            .map(cosmic::Action::App)
                         })),
                     ))
                 }
-            });
+            })
+            .class(theme::Button::AppletIcon);
 
-        Element::from(self.core.applet.applet_tooltip::<Message>(
-            button,
-            "Wireless",
-            self.popup.is_some(),
-            Message::Surface,
-            None,
-        ))
+        autosize::autosize(button, AUTOSIZE_ID.clone()).into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Message> {
-        widget::text::body("Wireless").into()
+        device_list(&self.devices)
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
     }
+}
+
+fn device_list(devices: &[WirelessDevice]) -> Element<'_, Message> {
+    let mut list = list_column();
+
+    if devices.is_empty() {
+        list = list.add(
+            cosmic::widget::container(text::body("No wireless devices found"))
+                .padding(menu_control_padding()),
+        );
+    } else {
+        for device in devices {
+            list = list.add(device_row(device));
+        }
+    }
+
+    list.into()
+}
+
+fn device_row(device: &WirelessDevice) -> Element<'_, Message> {
+    let mut details: Vec<Element<'_, Message>> = Vec::with_capacity(2);
+    details.push(text::body(device.name.clone()).into());
+    details.push(text::caption(device.state.label()).into());
+
+    let capacity = device
+        .capacity
+        .map(|value| format!("{value}%"))
+        .unwrap_or_else(|| "--".to_owned());
+
+    row::with_children(vec![
+        icon::from_name(device.kind.icon_name())
+            .size(24)
+            .icon()
+            .into(),
+        column::with_children(details).width(Length::Fill).into(),
+        text::body(capacity).into(),
+    ])
+    .align_y(Alignment::Center)
+    .spacing(12)
+    .padding(menu_control_padding())
+    .into()
 }

@@ -2,6 +2,7 @@
 // Copyright 2026 Artem Wittermann
 
 mod app;
+mod backend;
 mod config;
 
 pub fn run() -> cosmic::iced::Result {

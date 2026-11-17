@@ -104,11 +104,30 @@ pub fn subscription() -> Subscription<BackendEvent> {
         stream::channel(16, |mut output: Sender<BackendEvent>| async move {
             let _ = output.send(BackendEvent::Snapshot(sysfs::scan())).await;
 
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            interval.tick().await;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
-            loop {
-                interval.tick().await;
+            // The monitor is built inside the thread because udev::MonitorSocket
+            // is not Send. Only the channel sender crosses the boundary.
+            std::thread::spawn(move || {
+                let socket = udev::MonitorBuilder::new()
+                    .and_then(|builder| builder.match_subsystem("power_supply"))
+                    .and_then(|builder| builder.listen());
+
+                match socket {
+                    Ok(socket) => {
+                        tracing::debug!("udev monitor listening on power_supply");
+                        for _event in socket.iter() {
+                            if tx.send(()).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(err) => tracing::warn!(?err, "failed to start udev monitor"),
+                }
+            });
+
+            while rx.recv().await.is_some() {
+                tracing::debug!("power supply changed, rescanning");
                 let _ = output.send(BackendEvent::Snapshot(sysfs::scan())).await;
             }
         })

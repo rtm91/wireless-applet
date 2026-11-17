@@ -36,15 +36,7 @@ fn read_device(dir: &Path) -> Option<WirelessDevice> {
     let scope = read_attr(dir, "scope").unwrap_or_default();
     let wireless = read_attr(dir, "wireless").as_deref() == Some("1");
 
-    // Device-scoped supplies reuse `online` to report whether the wireless
-    // link is up rather than whether external power is present. System-scoped
-    // supplies keep the usual meaning, so only trust it for peripherals.
-    let connected = match read_attr(dir, "online") {
-        Some(value) if scope.eq_ignore_ascii_case("device") => value == "1",
-        _ => true,
-    };
-
-    if !is_wireless(wireless, &scope, kind, &model) {
+    if !is_wireless(wireless, &scope, &model) {
         return None;
     }
 
@@ -53,17 +45,72 @@ fn read_device(dir: &Path) -> Option<WirelessDevice> {
     let id = dir.file_name()?.to_string_lossy().into_owned();
     let name = if model.is_empty() { id.clone() } else { model };
 
+    let capacity = read_capacity(dir);
+    let mut state = ChargeState::from_sysfs(&read_attr(dir, "status").unwrap_or_default());
+
+    // Plenty of devices report `Discharging` no matter what, so a battery at
+    // full is reported as full.
+    if capacity == Some(100) {
+        state = ChargeState::Full;
+    }
+
     Some(WirelessDevice {
         id,
         name,
         kind,
-        capacity: read_attr(dir, "capacity")
-            .and_then(|value| value.parse::<u8>().ok())
-            .map(|value| value.min(100)),
-        state: ChargeState::from_sysfs(&read_attr(dir, "status").unwrap_or_default()),
-        connected,
+        capacity,
+        state,
+        connected: read_connected(dir, &scope, state),
         wireless,
     })
+}
+
+/// Reads the charge percentage, falling back to the coarse `capacity_level`
+/// attribute that some devices report instead of a number.
+fn read_capacity(dir: &Path) -> Option<u8> {
+    if let Some(value) = read_attr(dir, "capacity").and_then(|value| value.parse::<u8>().ok()) {
+        return Some(value.min(100));
+    }
+
+    let percent = match read_attr(dir, "capacity_level")?.to_ascii_lowercase().as_str() {
+        "full" => 100,
+        "high" => 70,
+        "normal" => 55,
+        "low" => 10,
+        "critical" => 5,
+        "unknown" => 50,
+        _ => return None,
+    };
+
+    Some(percent)
+}
+
+/// Decides whether the peripheral is currently reachable.
+///
+/// Device-scoped supplies reuse `online` to report whether the wireless link
+/// is up rather than whether external power is present. System-scoped supplies
+/// keep the usual meaning, so only trust it for peripherals.
+fn read_connected(dir: &Path, scope: &str, state: ChargeState) -> bool {
+    let Some(value) = read_attr(dir, "online") else {
+        return true;
+    };
+
+    if !scope.eq_ignore_ascii_case("device") {
+        return true;
+    }
+
+    let link_up = value == "1";
+
+    // Logitech devices reuse `online` for battery status instead: it reads 0
+    // while the device is wired or charging, where `status` is still
+    // meaningful. Only treat that as a disconnect when the charge state is
+    // unknown as well.
+    let logitech_quirk = !link_up
+        && state != ChargeState::Unknown
+        && read_attr(dir, "manufacturer")
+            .is_some_and(|vendor| vendor.to_ascii_lowercase().contains("logitech"));
+
+    link_up || logitech_quirk
 }
 
 fn read_attr(dir: &Path, name: &str) -> Option<String> {
@@ -72,13 +119,14 @@ fn read_attr(dir: &Path, name: &str) -> Option<String> {
         .map(|value| value.trim().to_owned())
 }
 
-/// Decides whether a power supply belongs to a wireless device.
+/// Decides whether a power supply belongs to a peripheral rather than the
+/// system.
 ///
 /// The kernel only exposes `POWER_SUPPLY_PROP_WIRELESS` for hardware that
 /// reports it, which is rare. Peripherals behind a 2.4 GHz dongle or a
 /// Bluetooth link instead appear as a device-scoped battery, so scope and
 /// model name serve as fallbacks.
-fn is_wireless(wireless: bool, scope: &str, kind: DeviceKind, model: &str) -> bool {
+fn is_wireless(wireless: bool, scope: &str, model: &str) -> bool {
     if wireless {
         return true;
     }
@@ -91,10 +139,10 @@ fn is_wireless(wireless: bool, scope: &str, kind: DeviceKind, model: &str) -> bo
         return true;
     }
 
-    if kind == DeviceKind::Other {
-        return false;
-    }
-
+    // `scope=Device` is the kernel declaring that this battery powers a
+    // peripheral rather than the system, which is the strongest signal
+    // available. Model names are only a hint and must not gate this, or
+    // devices with unrecognised names get dropped.
     scope.eq_ignore_ascii_case("device")
 }
 
@@ -169,27 +217,29 @@ mod tests {
 
     #[test]
     fn wireless_attribute_wins() {
-        assert!(is_wireless(true, "System", DeviceKind::Other, ""));
+        assert!(is_wireless(true, "System", ""));
     }
 
     #[test]
     fn device_scope_peripheral_is_wireless() {
-        assert!(is_wireless(false, "Device", DeviceKind::Mouse, ""));
+        assert!(is_wireless(false, "Device", ""));
     }
 
     #[test]
     fn system_scope_battery_is_not_wireless() {
-        assert!(!is_wireless(false, "System", DeviceKind::Other, ""));
+        assert!(!is_wireless(false, "System", ""));
     }
 
     #[test]
     fn model_name_hint_marks_wireless() {
-        assert!(is_wireless(
-            false,
-            "System",
-            DeviceKind::Mouse,
-            "Compx VXE NordicMouse 1K Dongle"
-        ));
+        assert!(is_wireless(false, "System", "Compx VXE NordicMouse 1K Dongle"));
+    }
+
+    #[test]
+    fn unrecognised_model_name_is_still_a_peripheral() {
+        // Regression: a device-scoped battery used to be dropped unless its
+        // model name matched a known keyword.
+        assert!(is_wireless(false, "Device", "WH-1000XM5"));
     }
 
     #[test]
@@ -307,6 +357,129 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_device_with_an_unrecognised_name() {
+        let fixture = Fixture::new(
+            "unknown-name",
+            &[
+                ("type", "Battery"),
+                ("status", "Discharging"),
+                ("capacity", "70"),
+                ("online", "1"),
+                ("present", "1"),
+                ("scope", "Device"),
+                ("model_name", "WH-1000XM5"),
+            ],
+        );
+
+        let device = read_device(&fixture.0).expect("device should be recognised");
+
+        assert_eq!(device.name, "WH-1000XM5");
+        assert_eq!(device.kind, DeviceKind::Other);
+        assert_eq!(device.capacity, Some(70));
+    }
+
+    #[test]
+    fn falls_back_to_capacity_level() {
+        let fixture = Fixture::new(
+            "capacity-level",
+            &[
+                ("type", "Mouse"),
+                ("scope", "Device"),
+                ("capacity_level", "Low"),
+            ],
+        );
+
+        assert_eq!(read_device(&fixture.0).unwrap().capacity, Some(10));
+    }
+
+    #[test]
+    fn capacity_wins_over_capacity_level() {
+        let fixture = Fixture::new(
+            "both-capacities",
+            &[
+                ("type", "Mouse"),
+                ("scope", "Device"),
+                ("capacity", "42"),
+                ("capacity_level", "Full"),
+            ],
+        );
+
+        assert_eq!(read_device(&fixture.0).unwrap().capacity, Some(42));
+    }
+
+    #[test]
+    fn parses_empty_charge_state() {
+        assert_eq!(ChargeState::from_sysfs("Empty"), ChargeState::Empty);
+        assert_eq!(ChargeState::Empty.label(), "Empty");
+    }
+
+    #[test]
+    fn full_capacity_overrides_discharging() {
+        let fixture = Fixture::new(
+            "full-capacity",
+            &[
+                ("type", "Mouse"),
+                ("scope", "Device"),
+                ("capacity", "100"),
+                ("status", "Discharging"),
+            ],
+        );
+
+        assert_eq!(read_device(&fixture.0).unwrap().state, ChargeState::Full);
+    }
+
+    #[test]
+    fn logitech_offline_with_known_state_stays_connected() {
+        let fixture = Fixture::new(
+            "logitech-wired",
+            &[
+                ("type", "Mouse"),
+                ("scope", "Device"),
+                ("online", "0"),
+                ("status", "Charging"),
+                ("manufacturer", "Logitech"),
+                ("capacity", "60"),
+            ],
+        );
+
+        assert!(read_device(&fixture.0).unwrap().connected);
+    }
+
+    #[test]
+    fn logitech_offline_with_unknown_state_is_disconnected() {
+        let fixture = Fixture::new(
+            "logitech-off",
+            &[
+                ("type", "Mouse"),
+                ("scope", "Device"),
+                ("online", "0"),
+                ("status", "Unknown"),
+                ("manufacturer", "Logitech"),
+                ("capacity", "60"),
+            ],
+        );
+
+        assert!(!read_device(&fixture.0).unwrap().connected);
+    }
+
+    #[test]
+    fn other_vendors_offline_is_disconnected() {
+        let fixture = Fixture::new(
+            "other-vendor-off",
+            &[
+                ("type", "Mouse"),
+                ("scope", "Device"),
+                ("online", "0"),
+                ("status", "Charging"),
+                ("manufacturer", "Compx"),
+                ("capacity", "60"),
+            ],
+        );
+
+        assert!(!read_device(&fixture.0).unwrap().connected);
+    }
+
+    #[test]
     fn skips_absent_devices() {
         let fixture = Fixture::new(
             "absent",
@@ -352,5 +525,15 @@ mod tests {
         );
 
         assert_eq!(read_device(&fixture.0).unwrap().capacity, None);
+    }
+
+    /// Smoke test against the live sysfs tree, so the heuristics can be checked
+    /// against real hardware. Run with `cargo test -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn scans_the_live_system() {
+        let devices = scan();
+        println!("{devices:#?}");
+        assert!(!devices.is_empty(), "expected at least one wireless device");
     }
 }

@@ -85,6 +85,7 @@ pub enum ChargeState {
     Discharging,
     Full,
     NotCharging,
+    Empty,
     Unknown,
 }
 
@@ -95,6 +96,7 @@ impl ChargeState {
             "discharging" => Self::Discharging,
             "full" => Self::Full,
             "not charging" => Self::NotCharging,
+            "empty" => Self::Empty,
             _ => Self::Unknown,
         }
     }
@@ -105,6 +107,7 @@ impl ChargeState {
             Self::Discharging => "Discharging",
             Self::Full => "Full",
             Self::NotCharging => "Not charging",
+            Self::Empty => "Empty",
             Self::Unknown => "Unknown",
         }
     }

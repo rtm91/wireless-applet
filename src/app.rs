@@ -5,13 +5,13 @@ use std::sync::LazyLock;
 
 use cosmic::app::{Core, Task};
 use cosmic::applet::cosmic_panel_config::PanelAnchor;
-use cosmic::applet::menu_control_padding;
+use cosmic::applet::padded_control;
 use cosmic::iced::core::window;
 use cosmic::iced::window::Id;
 use cosmic::iced::{Alignment, Length, Rectangle, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::theme;
-use cosmic::widget::{Id as WidgetId, autosize, button, column, icon, list_column, row, text};
+use cosmic::widget::{Id as WidgetId, autosize, button, column, icon, row, text};
 use cosmic::Element;
 
 use crate::backend::{self, BackendEvent, ChargeState, WirelessDevice};
@@ -194,20 +194,17 @@ impl cosmic::Application for Applet {
 }
 
 fn device_list(devices: &[WirelessDevice]) -> Element<'_, Message> {
-    let mut list = list_column();
+    let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(devices.len());
 
     if devices.is_empty() {
-        list = list.add(
-            cosmic::widget::container(text::body("No wireless devices found"))
-                .padding(menu_control_padding()),
-        );
+        rows.push(padded_control(text::body("No wireless devices found")).into());
     } else {
         for device in devices {
-            list = list.add(device_row(device));
+            rows.push(device_row(device));
         }
     }
 
-    list.into()
+    column::with_children(rows).padding([8, 0]).into()
 }
 
 /// Charge at or below which the percentage is called out.
@@ -270,16 +267,17 @@ fn device_row(device: &WirelessDevice) -> Element<'_, Message> {
         capacity.into()
     };
 
-    row::with_children(vec![
-        icon::from_name(device.kind.icon_name())
-            .size(24)
-            .icon()
-            .into(),
-        column::with_children(details).width(Length::Fill).into(),
-        capacity,
-    ])
-    .align_y(Alignment::Center)
-    .spacing(12)
-    .padding(menu_control_padding())
+    padded_control(
+        row::with_children(vec![
+            icon::from_name(device.kind.icon_name())
+                .size(24)
+                .icon()
+                .into(),
+            column::with_children(details).width(Length::Fill).into(),
+            capacity,
+        ])
+        .align_y(Alignment::Center)
+        .spacing(12),
+    )
     .into()
 }

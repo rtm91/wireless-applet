@@ -32,3 +32,4 @@ zbus = { version = "6", default-features = false, features = ["tokio"] }
 opt-level = 3
 panic = "abort"
 lto = "thin"
+strip = true

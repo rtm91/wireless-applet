@@ -49,6 +49,11 @@ uninstall-user:
 run:
     cargo run
 
+# Checks the desktop entry and the metainfo against their specs
+validate:
+    desktop-file-validate data/{{appid}}.desktop
+    appstreamcli validate --no-net data/{{appid}}.metainfo.xml
+
 check:
     cargo clippy --all-targets -- -W clippy::all
 

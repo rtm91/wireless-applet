@@ -23,6 +23,10 @@ type Objects = HashMap<OwnedObjectPath, Interfaces>;
 /// actually reports a level, so a paired-but-idle headset drops out of the
 /// list instead of showing a stale number.
 pub async fn scan(connection: &zbus::Connection) -> zbus::Result<Vec<WirelessDevice>> {
+    Ok(devices_from_objects(&objects(connection).await?))
+}
+
+async fn objects(connection: &zbus::Connection) -> zbus::Result<Objects> {
     let reply = connection
         .call_method(
             Some(BLUEZ),
@@ -33,9 +37,7 @@ pub async fn scan(connection: &zbus::Connection) -> zbus::Result<Vec<WirelessDev
         )
         .await?;
 
-    let objects: Objects = reply.body().deserialize()?;
-
-    Ok(devices_from_objects(&objects))
+    reply.body().deserialize()
 }
 
 fn devices_from_objects(objects: &Objects) -> Vec<WirelessDevice> {
@@ -254,5 +256,35 @@ mod tests {
         let devices = scan(&connection).await.unwrap();
 
         println!("{devices:#?}");
+    }
+
+    /// Parses the live object tree with a battery injected into every device.
+    ///
+    /// BlueZ only publishes `Battery1` for hardware that exposes the GATT
+    /// battery service, which rules out testing the positive path with the
+    /// hardware on hand. Injecting the interface into the real reply still
+    /// exercises the real deserialization and the real `Device1` properties.
+    #[tokio::test]
+    #[ignore]
+    async fn parses_a_live_device_with_an_injected_battery() {
+        let connection = zbus::Connection::system().await.unwrap();
+        let mut objects = objects(&connection).await.unwrap();
+
+        let mut injected = 0;
+        for interfaces in objects.values_mut() {
+            if interfaces.contains_key(DEVICE) {
+                interfaces.insert(
+                    BATTERY.to_owned(),
+                    HashMap::from([("Percentage".to_owned(), OwnedVariant::from(85u8))]),
+                );
+                injected += 1;
+            }
+        }
+
+        let devices = devices_from_objects(&objects);
+        println!("{devices:#?}");
+
+        assert_eq!(devices.len(), injected);
+        assert!(devices.iter().all(|device| device.capacity == Some(85)));
     }
 }

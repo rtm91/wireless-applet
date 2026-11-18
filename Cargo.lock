@@ -922,6 +922,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "udev",
+ "zbus 6.3.0",
 ]
 
 [[package]]

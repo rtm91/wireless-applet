@@ -22,6 +22,7 @@ tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 udev = "0.9"
+zbus = { version = "6", default-features = false, features = ["tokio"] }
 
 [profile.release]
 opt-level = 3

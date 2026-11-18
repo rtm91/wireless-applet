@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright 2026 Artem Wittermann
 
+pub mod bluez;
 pub mod sysfs;
 
+use std::cmp::Ordering;
 use std::time::Duration;
 
 use cosmic::iced::Subscription;
@@ -38,12 +40,16 @@ impl WirelessDevice {
     /// Label describing the device's current state.
     ///
     /// A device that is out of range keeps reporting its last known capacity,
-    /// so the link state takes precedence over the charge state.
+    /// so the link state takes precedence over the charge state. BlueZ reports
+    /// a level but no charge state, so a reachable Bluetooth device reads as
+    /// connected rather than unknown.
     pub fn status_label(&self) -> &'static str {
-        if self.connected {
-            self.state.label()
-        } else {
+        if !self.connected {
             "Disconnected"
+        } else if self.state == ChargeState::Unknown {
+            "Connected"
+        } else {
+            self.state.label()
         }
     }
 }
@@ -64,6 +70,20 @@ impl DeviceKind {
             "keyboard" => Self::Keyboard,
             "headset" | "headphones" | "audio" => Self::Headset,
             "joystick" | "gamepad" | "gaming-input" => Self::Gamepad,
+            _ => Self::Other,
+        }
+    }
+
+    /// Maps a BlueZ `Device1.Icon` name to a device kind.
+    ///
+    /// BlueZ reports freedesktop icon names, without the `-symbolic` suffix
+    /// the theme appends.
+    pub fn from_bluez_icon(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "input-mouse" => Self::Mouse,
+            "input-keyboard" => Self::Keyboard,
+            "audio-headphones" | "audio-headset" | "audio-card" => Self::Headset,
+            "input-gaming" => Self::Gamepad,
             _ => Self::Other,
         }
     }
@@ -127,11 +147,112 @@ pub enum BackendEvent {
 /// scan is a handful of small file reads, so a short interval is cheap.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Reachable devices first, so a peripheral that is switched off does not push
+/// the live ones down the list.
+fn by_reachability(a: &WirelessDevice, b: &WirelessDevice) -> Ordering {
+    b.connected
+        .cmp(&a.connected)
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+/// Combines the two sources into one list.
+///
+/// A Bluetooth peripheral can appear in both: the kernel exposes a
+/// `power_supply` for HID devices it drives, and BlueZ reports the same battery
+/// over D-Bus. BlueZ wins, because it knows the real link state.
+fn merge(sysfs: Vec<WirelessDevice>, bluez: Vec<WirelessDevice>) -> Vec<WirelessDevice> {
+    let mut devices = bluez;
+
+    for device in sysfs {
+        if !devices.iter().any(|known| same_device(known, &device)) {
+            devices.push(device);
+        }
+    }
+
+    devices.sort_by(by_reachability);
+    devices
+}
+
+/// The MAC address BlueZ encodes in a device's object path.
+fn bluez_address(id: &str) -> Option<String> {
+    let address = id.rsplit('/').next()?.strip_prefix("dev_")?;
+
+    Some(address.replace('_', ":").to_ascii_lowercase())
+}
+
+/// Whether a BlueZ device and a sysfs device describe the same peripheral.
+///
+/// The kernel names a Bluetooth HID battery after the device's address, so the
+/// address is the only identifier the two sources share. Devices whose supply
+/// is named after the driver instead, such as `hidpp_battery_0`, are not
+/// matched and show up twice.
+fn same_device(bluez: &WirelessDevice, sysfs: &WirelessDevice) -> bool {
+    bluez_address(&bluez.id)
+        .is_some_and(|address| sysfs.id.to_ascii_lowercase().contains(&address))
+}
+
+/// Keeps a system bus connection alive across scans.
+///
+/// BlueZ is optional: a machine without bluetoothd still gets the sysfs
+/// devices, so a failed connection is not an error.
+#[derive(Default)]
+struct BluezLink {
+    connection: Option<zbus::Connection>,
+    failing: bool,
+}
+
+impl BluezLink {
+    async fn scan(&mut self) -> Vec<WirelessDevice> {
+        if self
+            .connection
+            .as_ref()
+            .is_some_and(|connection| connection.is_closed())
+        {
+            self.connection = None;
+        }
+
+        if self.connection.is_none() {
+            match zbus::Connection::system().await {
+                Ok(connection) => self.connection = Some(connection),
+                Err(err) => {
+                    self.report(&err);
+                    return Vec::new();
+                }
+            }
+        }
+
+        let Some(connection) = self.connection.as_ref() else {
+            return Vec::new();
+        };
+
+        match bluez::scan(connection).await {
+            Ok(devices) => {
+                self.failing = false;
+                devices
+            }
+            Err(err) => {
+                self.report(&err);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Logs a failure once, rather than on every poll.
+    fn report(&mut self, err: &zbus::Error) {
+        if !self.failing {
+            tracing::debug!(?err, "bluetooth unavailable");
+            self.failing = true;
+        }
+    }
+}
+
 /// Emits a snapshot on start and again whenever the devices change.
 pub fn subscription() -> Subscription<BackendEvent> {
     Subscription::run_with("wireless-backend", |_| {
         stream::channel(16, |mut output: Sender<BackendEvent>| async move {
-            let mut last = sysfs::scan();
+            let mut bluez = BluezLink::default();
+
+            let mut last = merge(sysfs::scan(), bluez.scan().await);
             let _ = output.send(BackendEvent::Snapshot(last.clone())).await;
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -191,7 +312,7 @@ pub fn subscription() -> Subscription<BackendEvent> {
                     _ = interval.tick() => {}
                 }
 
-                let devices = sysfs::scan();
+                let devices = merge(sysfs::scan(), bluez.scan().await);
                 if devices == last {
                     continue;
                 }
@@ -201,4 +322,127 @@ pub fn subscription() -> Subscription<BackendEvent> {
             }
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(id: &str, name: &str, connected: bool) -> WirelessDevice {
+        WirelessDevice {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            kind: DeviceKind::Other,
+            capacity: Some(50),
+            state: ChargeState::Unknown,
+            connected,
+            wireless: true,
+        }
+    }
+
+    #[test]
+    fn extracts_the_address_from_a_bluez_path() {
+        assert_eq!(
+            bluez_address("/org/bluez/hci0/dev_68_CA_C4_D3_21_90").as_deref(),
+            Some("68:ca:c4:d3:21:90")
+        );
+    }
+
+    #[test]
+    fn adapter_paths_have_no_address() {
+        assert_eq!(bluez_address("/org/bluez/hci0"), None);
+        assert_eq!(bluez_address("/org/bluez"), None);
+    }
+
+    #[test]
+    fn matches_a_bluetooth_device_to_its_sysfs_supply() {
+        let bluez = device("/org/bluez/hci0/dev_68_CA_C4_D3_21_90", "AirPods Pro", true);
+        let sysfs = device("hid-68:ca:c4:d3:21:90-battery", "AirPods Pro", true);
+
+        assert!(same_device(&bluez, &sysfs));
+    }
+
+    #[test]
+    fn does_not_match_unrelated_devices() {
+        let bluez = device("/org/bluez/hci0/dev_68_CA_C4_D3_21_90", "AirPods Pro", true);
+        let sysfs = device("kysona-0003:3554:F58A.0005-battery", "Compx VXE", true);
+
+        assert!(!same_device(&bluez, &sysfs));
+    }
+
+    #[test]
+    fn bluez_wins_over_a_duplicate_sysfs_entry() {
+        let bluez = device("/org/bluez/hci0/dev_68_CA_C4_D3_21_90", "AirPods Pro", true);
+        let sysfs = device("hid-68:ca:c4:d3:21:90-battery", "AirPods Pro", false);
+
+        let merged = merge(vec![sysfs], vec![bluez]);
+
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].connected);
+        assert_eq!(merged[0].id, "/org/bluez/hci0/dev_68_CA_C4_D3_21_90");
+    }
+
+    #[test]
+    fn keeps_devices_from_both_sources() {
+        let bluez = device("/org/bluez/hci0/dev_68_CA_C4_D3_21_90", "AirPods Pro", true);
+        let sysfs = device("kysona-0003:3554:F58A.0005-battery", "Compx VXE", true);
+
+        let merged = merge(vec![sysfs], vec![bluez]);
+
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn reachable_devices_sort_first() {
+        let offline = device("a", "Zeta", false);
+        let online = device("b", "Alpha", true);
+
+        let merged = merge(vec![offline], vec![online]);
+
+        assert_eq!(merged[0].name, "Alpha");
+        assert_eq!(merged[1].name, "Zeta");
+    }
+
+    #[test]
+    fn connected_device_without_a_charge_state_reads_as_connected() {
+        let mut device = device("a", "AirPods Pro", true);
+        device.state = ChargeState::Unknown;
+
+        assert_eq!(device.status_label(), "Connected");
+    }
+
+    #[test]
+    fn connected_device_with_a_charge_state_reports_it() {
+        let mut device = device("a", "Compx VXE", true);
+        device.state = ChargeState::Discharging;
+
+        assert_eq!(device.status_label(), "Discharging");
+    }
+
+    #[test]
+    fn disconnected_device_ignores_its_charge_state() {
+        let mut device = device("a", "Compx VXE", false);
+        device.state = ChargeState::Charging;
+
+        assert_eq!(device.status_label(), "Disconnected");
+    }
+
+    #[test]
+    fn maps_bluez_icons() {
+        assert_eq!(DeviceKind::from_bluez_icon("input-mouse"), DeviceKind::Mouse);
+        assert_eq!(
+            DeviceKind::from_bluez_icon("input-keyboard"),
+            DeviceKind::Keyboard
+        );
+        assert_eq!(
+            DeviceKind::from_bluez_icon("audio-headphones"),
+            DeviceKind::Headset
+        );
+        assert_eq!(
+            DeviceKind::from_bluez_icon("input-gaming"),
+            DeviceKind::Gamepad
+        );
+        assert_eq!(DeviceKind::from_bluez_icon("phone"), DeviceKind::Other);
+        assert_eq!(DeviceKind::from_bluez_icon(""), DeviceKind::Other);
+    }
 }

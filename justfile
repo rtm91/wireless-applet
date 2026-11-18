@@ -7,6 +7,7 @@ target := 'release'
 bindir := rootdir + prefix / 'bin'
 sharedir := rootdir + prefix / 'share'
 icondir := sharedir / 'icons' / 'hicolor' / 'scalable' / 'status'
+metainfodir := sharedir / 'metainfo'
 
 default: build
 
@@ -22,22 +23,26 @@ build-debug:
 install: build
     install -Dm0755 target/{{target}}/{{bin}} {{bindir}}/{{bin}}
     install -Dm0644 data/{{appid}}.desktop {{sharedir}}/applications/{{appid}}.desktop
+    install -Dm0644 data/{{appid}}.metainfo.xml {{metainfodir}}/{{appid}}.metainfo.xml
     install -Dm0644 data/icons/scalable/status/{{appid}}-symbolic.svg {{icondir}}/{{appid}}-symbolic.svg
 
 # Installs into the user's home, no root needed
 install-user: build
     install -Dm0755 target/{{target}}/{{bin}} ~/.local/bin/{{bin}}
     install -Dm0644 data/{{appid}}.desktop ~/.local/share/applications/{{appid}}.desktop
+    install -Dm0644 data/{{appid}}.metainfo.xml ~/.local/share/metainfo/{{appid}}.metainfo.xml
     install -Dm0644 data/icons/scalable/status/{{appid}}-symbolic.svg ~/.local/share/icons/hicolor/scalable/status/{{appid}}-symbolic.svg
 
 uninstall:
     rm -f {{bindir}}/{{bin}}
     rm -f {{sharedir}}/applications/{{appid}}.desktop
+    rm -f {{metainfodir}}/{{appid}}.metainfo.xml
     rm -f {{icondir}}/{{appid}}-symbolic.svg
 
 uninstall-user:
     rm -f ~/.local/bin/{{bin}}
     rm -f ~/.local/share/applications/{{appid}}.desktop
+    rm -f ~/.local/share/metainfo/{{appid}}.metainfo.xml
     rm -f ~/.local/share/icons/hicolor/scalable/status/{{appid}}-symbolic.svg
 
 # Runs the applet outside the panel for quick iteration

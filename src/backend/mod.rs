@@ -14,6 +14,9 @@ use cosmic::iced::stream;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::io::Errno;
 
+use crate::config::ICON;
+use crate::fl;
+
 /// A wireless device that reports a battery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WirelessDevice {
@@ -43,11 +46,11 @@ impl WirelessDevice {
     /// so the link state takes precedence over the charge state. BlueZ reports
     /// a level but no charge state, so a reachable Bluetooth device reads as
     /// connected rather than unknown.
-    pub fn status_label(&self) -> &'static str {
+    pub fn status_label(&self) -> String {
         if !self.connected {
-            "Disconnected"
+            fl!("state-disconnected")
         } else if self.state == ChargeState::Unknown {
-            "Connected"
+            fl!("state-connected")
         } else {
             self.state.label()
         }
@@ -94,7 +97,7 @@ impl DeviceKind {
             Self::Keyboard => "input-keyboard-symbolic",
             Self::Headset => "audio-headphones-symbolic",
             Self::Gamepad => "input-gaming-symbolic",
-            Self::Other => "network-wireless-symbolic",
+            Self::Other => ICON,
         }
     }
 }
@@ -121,14 +124,14 @@ impl ChargeState {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Charging => "Charging",
-            Self::Discharging => "Discharging",
-            Self::Full => "Full",
-            Self::NotCharging => "Not charging",
-            Self::Empty => "Empty",
-            Self::Unknown => "Unknown",
+            Self::Charging => fl!("state-charging"),
+            Self::Discharging => fl!("state-discharging"),
+            Self::Full => fl!("state-full"),
+            Self::NotCharging => fl!("state-not-charging"),
+            Self::Empty => fl!("state-empty"),
+            Self::Unknown => fl!("state-unknown"),
         }
     }
 }

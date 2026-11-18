@@ -4,7 +4,9 @@
 mod app;
 mod backend;
 mod config;
+mod localize;
 
 pub fn run() -> cosmic::iced::Result {
+    localize::localize();
     app::run()
 }

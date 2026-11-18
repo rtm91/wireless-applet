@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 pub const APP_ID: &str = "io.github.rtm91.WirelessApplet";
 
+/// The applet's own symbolic icon, installed next to the desktop entry.
+pub const ICON: &str = "io.github.rtm91.WirelessApplet-symbolic";
+
 /// Charge at or below which the percentage is called out.
 pub const DEFAULT_LOW_THRESHOLD: u8 = 20;
 

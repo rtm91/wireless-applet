@@ -17,7 +17,8 @@ use cosmic::widget::{
 use cosmic::Element;
 
 use crate::backend::{self, BackendEvent, ChargeState, WirelessDevice};
-use crate::config::{APP_ID, Config, MAX_LOW_THRESHOLD, MIN_LOW_THRESHOLD};
+use crate::config::{APP_ID, Config, ICON, MAX_LOW_THRESHOLD, MIN_LOW_THRESHOLD};
+use crate::fl;
 
 static AUTOSIZE_ID: LazyLock<WidgetId> =
     LazyLock::new(|| WidgetId::new("wireless-applet-autosize"));
@@ -203,7 +204,7 @@ impl cosmic::Application for Applet {
 
         if connected.is_empty() {
             groups.push(
-                icon::from_name("network-wireless-symbolic")
+                icon::from_name(ICON)
                     .size(suggested_size.0)
                     .icon()
                     .into(),
@@ -305,7 +306,7 @@ fn popup_content<'a>(devices: &'a [WirelessDevice], config: &'a Config) -> Eleme
     let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(visible.len());
 
     if visible.is_empty() {
-        rows.push(padded_control(text::body("No wireless devices found")).into());
+        rows.push(padded_control(text::body(fl!("no-devices"))).into());
     } else {
         for device in visible {
             rows.push(device_row(device, config.low_threshold));
@@ -318,20 +319,20 @@ fn popup_content<'a>(devices: &'a [WirelessDevice], config: &'a Config) -> Eleme
         .push(padded_control(
             toggler(config.show_percentage)
                 .on_toggle(Message::ToggleShowPercentage)
-                .label("Show percentage in panel".to_owned())
+                .label(fl!("show-percentage"))
                 .text_size(14)
                 .width(Length::Fill),
         ))
         .push(padded_control(
             toggler(config.hide_disconnected)
                 .on_toggle(Message::ToggleHideDisconnected)
-                .label("Hide disconnected devices".to_owned())
+                .label(fl!("hide-disconnected"))
                 .text_size(14)
                 .width(Length::Fill),
         ))
         .push(padded_control(
             row::with_children(vec![
-                text::body("Low battery warning")
+                text::body(fl!("low-threshold"))
                     .width(Length::Fill)
                     .into(),
                 spin_button(

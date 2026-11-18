@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.rtm91.WirelessApplet</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="github.com.rtm91">
+    <name>Artem Wittermann</name>
+  </developer>
+  <url type="homepage">https://github.com/rtm91/wireless-applet</url>
+  <url type="bugtracker">https://github.com/rtm91/wireless-applet/issues</url>
+  <name>Wireless</name>
+  <summary>Battery and charging status for wireless peripherals</summary>
+  <description>
+    <p>
+      A COSMIC panel applet that shows the battery level and charging state of
+      wireless mice, keyboards, headsets and gamepads.
+    </p>
+    <p>
+      Devices are read from the kernel's power supply interface and from BlueZ,
+      so both 2.4 GHz receivers and standard Bluetooth peripherals are covered.
+      Every connected device gets its own icon and percentage in the panel.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.rtm91.WirelessApplet.desktop</launchable>
+  <icon type="stock">io.github.rtm91.WirelessApplet-symbolic</icon>
+  <categories>
+    <category>COSMIC</category>
+  </categories>
+  <provides>
+    <id>com.system76.CosmicApplet</id>
+    <binary>cosmic-applet-wireless</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-11-18"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

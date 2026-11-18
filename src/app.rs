@@ -56,16 +56,59 @@ pub enum Message {
 }
 
 impl Applet {
-    /// Lowest charge among devices that are currently reachable.
+    /// One panel entry: the device's own icon, then its charge.
     ///
-    /// A device that is out of range keeps reporting its last known capacity,
-    /// which would otherwise pin the panel to a stale number.
-    fn lowest_capacity(&self) -> Option<u8> {
-        self.devices
-            .iter()
-            .filter(|device| device.connected)
-            .filter_map(|device| device.capacity)
-            .min()
+    /// Only reachable devices get an entry. A device that is out of range
+    /// keeps reporting its last known capacity, which would otherwise pin the
+    /// panel to a stale number.
+    fn device_group(
+        &self,
+        device: &WirelessDevice,
+        horizontal: bool,
+        suggested_size: (u16, u16),
+        spacing: u16,
+    ) -> Element<'_, Message> {
+        let mut children: Vec<Element<'_, Message>> = Vec::with_capacity(2);
+
+        children.push(
+            icon::from_name(device.kind.icon_name())
+                .size(suggested_size.0)
+                .icon()
+                .into(),
+        );
+
+        if self.config.show_percentage
+            && let Some(capacity) = device.capacity
+        {
+            let label = self.core.applet.text(format!("{capacity}%"));
+            let label = if horizontal {
+                label
+            } else {
+                label.width(Length::Fixed(f32::from(suggested_size.0)))
+            };
+
+            children.push(
+                label
+                    .height(Length::Fixed(f32::from(suggested_size.1)))
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center)
+                    .into(),
+            );
+        }
+
+        // Tighter than the gap between devices, so each icon stays bound to
+        // its own percentage.
+        if horizontal {
+            row::with_children(children)
+                .spacing(spacing)
+                .align_y(Alignment::Center)
+                .into()
+        } else {
+            column::with_children(children)
+                .spacing(spacing)
+                .align_x(Alignment::Center)
+                .into()
+        }
     }
 }
 
@@ -148,41 +191,36 @@ impl cosmic::Application for Applet {
         let horizontal = self.core.applet.is_horizontal();
         let suggested_size = self.core.applet.suggested_size(true);
         let applet_padding = self.core.applet.suggested_padding(true);
+        let group_spacing = theme::active().cosmic().spacing.space_xxs;
 
-        let mut children: Vec<Element<'_, Message>> = Vec::with_capacity(2);
-        children.push(
-            icon::from_name("network-wireless-symbolic")
-                .size(suggested_size.0)
-                .icon()
-                .into(),
-        );
+        let connected: Vec<&WirelessDevice> = self
+            .devices
+            .iter()
+            .filter(|device| device.connected)
+            .collect();
 
-        if self.config.show_percentage
-            && let Some(capacity) = self.lowest_capacity()
-        {
-            let label = self.core.applet.text(format!("{capacity}%"));
-            let label = if horizontal {
-                label
-            } else {
-                label.width(Length::Fixed(f32::from(suggested_size.0)))
-            };
+        let mut groups: Vec<Element<'_, Message>> = Vec::with_capacity(connected.len());
 
-            children.push(
-                label
-                    .height(Length::Fixed(f32::from(suggested_size.1)))
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
+        if connected.is_empty() {
+            groups.push(
+                icon::from_name("network-wireless-symbolic")
+                    .size(suggested_size.0)
+                    .icon()
                     .into(),
             );
+        } else {
+            for device in connected {
+                groups.push(self.device_group(device, horizontal, suggested_size, group_spacing));
+            }
         }
 
         let content: Element<'_, Message> = if horizontal {
-            row::with_children(children)
+            row::with_children(groups)
                 .spacing(applet_padding.1)
                 .align_y(Alignment::Center)
                 .into()
         } else {
-            column::with_children(children)
+            column::with_children(groups)
                 .spacing(applet_padding.1)
                 .align_x(Alignment::Center)
                 .into()

@@ -5,16 +5,19 @@ use std::sync::LazyLock;
 
 use cosmic::app::{Core, Task};
 use cosmic::applet::padded_control;
+use cosmic::cosmic_theme::Spacing;
 use cosmic::iced::core::window;
 use cosmic::iced::window::Id;
 use cosmic::iced::{Alignment, Length, Rectangle, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::theme;
-use cosmic::widget::{Id as WidgetId, autosize, button, column, icon, row, text};
+use cosmic::widget::{
+    Id as WidgetId, autosize, button, column, divider, icon, row, spin_button, text, toggler,
+};
 use cosmic::Element;
 
 use crate::backend::{self, BackendEvent, ChargeState, WirelessDevice};
-use crate::config::APP_ID;
+use crate::config::{APP_ID, Config, MAX_LOW_THRESHOLD, MIN_LOW_THRESHOLD};
 
 static AUTOSIZE_ID: LazyLock<WidgetId> =
     LazyLock::new(|| WidgetId::new("wireless-applet-autosize"));
@@ -27,6 +30,7 @@ pub struct Applet {
     core: Core,
     popup: Option<Id>,
     devices: Vec<WirelessDevice>,
+    config: Config,
 }
 
 impl Default for Applet {
@@ -35,6 +39,7 @@ impl Default for Applet {
             core: Core::default(),
             popup: None,
             devices: Vec::new(),
+            config: Config::default(),
         }
     }
 }
@@ -44,6 +49,10 @@ pub enum Message {
     Surface(cosmic::surface::Action<Message>),
     PopupClosed(Id),
     Backend(BackendEvent),
+    ConfigChanged(Config),
+    ToggleShowPercentage(bool),
+    ToggleHideDisconnected(bool),
+    SetLowThreshold(u8),
 }
 
 impl Applet {
@@ -101,13 +110,38 @@ impl cosmic::Application for Applet {
             Message::Backend(BackendEvent::Snapshot(devices)) => {
                 self.devices = devices;
             }
+            Message::ConfigChanged(config) => {
+                tracing::debug!(?config, "config loaded");
+                self.config = config;
+            }
+            Message::ToggleShowPercentage(enabled) => {
+                self.config.show_percentage = enabled;
+                self.config.write();
+            }
+            Message::ToggleHideDisconnected(enabled) => {
+                self.config.hide_disconnected = enabled;
+                self.config.write();
+            }
+            Message::SetLowThreshold(threshold) => {
+                self.config.low_threshold = threshold.clamp(MIN_LOW_THRESHOLD, MAX_LOW_THRESHOLD);
+                self.config.write();
+            }
         }
 
         Task::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        backend::subscription().map(Message::Backend)
+        Subscription::batch([
+            backend::subscription().map(Message::Backend),
+            self.core.watch_config(Self::APP_ID).map(|update| {
+                for err in update.errors {
+                    tracing::error!(?err, "failed to watch config");
+                }
+
+                Message::ConfigChanged(update.config)
+            }),
+        ])
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -123,7 +157,9 @@ impl cosmic::Application for Applet {
                 .into(),
         );
 
-        if let Some(capacity) = self.lowest_capacity() {
+        if self.config.show_percentage
+            && let Some(capacity) = self.lowest_capacity()
+        {
             let label = self.core.applet.text(format!("{capacity}%"));
             let label = if horizontal {
                 label
@@ -190,10 +226,10 @@ impl cosmic::Application for Applet {
                         },
                         Some(Box::new(|state: &Self| {
                             Element::from(
-                                state
-                                    .core
-                                    .applet
-                                    .popup_container::<Message>(device_list(&state.devices)),
+                                state.core.applet.popup_container::<Message>(popup_content(
+                                    &state.devices,
+                                    &state.config,
+                                )),
                             )
                             .map(cosmic::Action::App)
                         })),
@@ -206,7 +242,10 @@ impl cosmic::Application for Applet {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Message> {
-        device_list(&self.devices)
+        self.core
+            .applet
+            .popup_container::<Message>(popup_content(&self.devices, &self.config))
+            .into()
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
@@ -214,22 +253,64 @@ impl cosmic::Application for Applet {
     }
 }
 
-fn device_list(devices: &[WirelessDevice]) -> Element<'_, Message> {
-    let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(devices.len());
+/// The popup: the device list, then the settings.
+fn popup_content<'a>(devices: &'a [WirelessDevice], config: &'a Config) -> Element<'a, Message> {
+    let Spacing {
+        space_xxs, space_s, ..
+    } = theme::active().cosmic().spacing;
 
-    if devices.is_empty() {
+    let visible: Vec<&WirelessDevice> = devices
+        .iter()
+        .filter(|device| device.connected || !config.hide_disconnected)
+        .collect();
+
+    let mut rows: Vec<Element<'_, Message>> = Vec::with_capacity(visible.len());
+
+    if visible.is_empty() {
         rows.push(padded_control(text::body("No wireless devices found")).into());
     } else {
-        for device in devices {
-            rows.push(device_row(device));
+        for device in visible {
+            rows.push(device_row(device, config.low_threshold));
         }
     }
 
-    column::with_children(rows).padding([8, 0]).into()
+    column::with_children(rows)
+        .padding([8, 0])
+        .push(padded_control(divider::horizontal::default()).padding([space_xxs, space_s]))
+        .push(padded_control(
+            toggler(config.show_percentage)
+                .on_toggle(Message::ToggleShowPercentage)
+                .label("Show percentage in panel".to_owned())
+                .text_size(14)
+                .width(Length::Fill),
+        ))
+        .push(padded_control(
+            toggler(config.hide_disconnected)
+                .on_toggle(Message::ToggleHideDisconnected)
+                .label("Hide disconnected devices".to_owned())
+                .text_size(14)
+                .width(Length::Fill),
+        ))
+        .push(padded_control(
+            row::with_children(vec![
+                text::body("Low battery warning")
+                    .width(Length::Fill)
+                    .into(),
+                spin_button(
+                    format!("{}%", config.low_threshold),
+                    config.low_threshold,
+                    5u8,
+                    MIN_LOW_THRESHOLD,
+                    MAX_LOW_THRESHOLD,
+                    Message::SetLowThreshold,
+                )
+                .into(),
+            ])
+            .align_y(Alignment::Center)
+            .spacing(8),
+        ))
+        .into()
 }
-
-/// Charge at or below which the percentage is called out.
-const LOW_THRESHOLD: u8 = 20;
 
 /// Dims text for devices that are out of range.
 fn dimmed(theme: &cosmic::Theme) -> cosmic::iced::advanced::widget::text::Style {
@@ -261,7 +342,7 @@ const DIMMED: theme::Text = theme::Text::Custom(dimmed);
 const CHARGING: theme::Text = theme::Text::Custom(charging);
 const LOW: theme::Text = theme::Text::Custom(low);
 
-fn device_row(device: &WirelessDevice) -> Element<'_, Message> {
+fn device_row(device: &WirelessDevice, low_threshold: u8) -> Element<'_, Message> {
     let mut details: Vec<Element<'_, Message>> = Vec::with_capacity(2);
 
     let name = text::body(device.name.clone());
@@ -282,7 +363,7 @@ fn device_row(device: &WirelessDevice) -> Element<'_, Message> {
         capacity.class(DIMMED).into()
     } else if device.state == ChargeState::Charging {
         capacity.class(CHARGING).into()
-    } else if device.capacity.is_some_and(|value| value <= LOW_THRESHOLD) {
+    } else if device.capacity.is_some_and(|value| value <= low_threshold) {
         capacity.class(LOW).into()
     } else {
         capacity.into()
